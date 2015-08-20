@@ -152,7 +152,7 @@ mkTransactionMenu api u = liftIO $ do
 
 getTransactions :: MonadIO io => String -> User -> io (L.List Transaction)
 getTransactions api (User _ uid _ _) = liftIO $ do
-  resp <- W.get $ formatToString (string % "/user/" % int % "/transaction") api uid
+  resp <- W.get $ userTransactions api uid
   page <- either (error . ("Unable to retrieve user transaction: " ++)) return $
     eitherDecode $ resp ^. W.responseBody
   return $ L.list "Transactions" drawTransactioListElement $ pageEntries page
@@ -189,9 +189,10 @@ toTrie = Trie.fromList . map (Text.encodeUtf16LE . userName &&& id)
 
 purchase :: MonadIO io => String -> User -> Centi -> io ()
 purchase api (User _ uid _ _) amount =
-    liftIO $ void $ W.post resource $ object [ "value" .= amount]
-  where
-    resource = formatToString (string % "/user/" % int % "/transaction") api uid
+    liftIO $ void $ W.post (userTransactions api uid) $ object [ "value" .= amount]
+
+userTransactions :: String -> Int -> String
+userTransactions = formatToString (string % "/user/" % int % "/transaction")
 
 
 main :: IO ()
