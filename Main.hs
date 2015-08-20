@@ -129,8 +129,8 @@ appEvent api s@(TransactionMenu u balance amounts transactions) e =
          case L.listSelectedElement amounts of
               Nothing -> M.continue s
               Just (_, a) -> do
-                purchase api u a
-                s' <- mkTransactionMenu api u
+                u' <- purchase api u a
+                s' <- mkTransactionMenu api u'
                 M.continue s'
        ev -> M.continue $ TransactionMenu u balance (T.handleEvent ev amounts) transactions
 
@@ -187,9 +187,12 @@ indexUsers = (id &&& Trie.elems) . toTrie . pageEntries
 toTrie :: [User] -> Trie.Trie User
 toTrie = Trie.fromList . map (Text.encodeUtf16LE . userName &&& id)
 
-purchase :: MonadIO io => String -> User -> Centi -> io ()
-purchase api (User _ uid _ _) amount =
-    liftIO $ void $ W.post (userTransactions api uid) $ object [ "value" .= amount]
+purchase :: MonadIO io => String -> User -> Centi -> io User
+purchase api (User _ uid _ _) amount = liftIO $ do
+    void $ W.post (userTransactions api uid) $ object [ "value" .= amount ]
+    resp <- W.get $ formatToString (string % "/user/" % int) api uid
+    either (error . ("Unable to retrieve user information: " ++)) return $
+      eitherDecode $ resp ^. W.responseBody
 
 userTransactions :: String -> Int -> String
 userTransactions = formatToString (string % "/user/" % int % "/transaction")
