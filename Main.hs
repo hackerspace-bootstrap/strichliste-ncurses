@@ -1,4 +1,4 @@
-{-# Language OverloadedStrings #-}
+{-# Language OverloadedStrings, DataKinds, TypeOperators, LambdaCase #-}
 
 import qualified Brick.Main as M
 import qualified Brick.Types as T
@@ -6,26 +6,26 @@ import qualified Brick.Widgets.Border as B
 import qualified Brick.Widgets.List as L
 import qualified Brick.Widgets.Center as C
 import qualified Brick.AttrMap as A
-import Brick.Widgets.Core
-  ( Widget
-  , txt
-  , vBox
-  , hBox
-  )
+import Brick.Widgets.Core (Widget, txt, str, vBox, hBox)
 import Brick.Util (on)
 import Control.Arrow ((&&&))
-import Control.Lens ((^.))
 import Control.Monad (void)
-import Control.Monad.IO.Class
-import Data.Aeson
+import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.Trans.Either (EitherT, runEitherT)
+import Data.Aeson ( FromJSON, parseJSON, ToJSON, toJSON, (.:), (.:?), (.=)
+                  , withObject, object
+                  )
 import Data.Fixed
-import Data.Monoid
+import Data.Proxy
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Trie as Trie
 import Formatting
 import qualified Graphics.Vty as V
-import qualified Network.Wreq as W
+import Servant.API
+import Servant.Client
+
+type ServantT = EitherT ServantError IO
 
 data Page a = Page
   { pageOverallCount :: Int
@@ -66,6 +66,34 @@ instance FromJSON Transaction where
     Transaction <$> o .: "value" <*> o .: "createDate" <*> o .: "id" <*> o .: "userId"
 
 
+newtype Value = Value { getValue :: Centi }
+
+instance ToJSON Value where
+  toJSON (Value amount) = object [ "value" .= amount ]
+
+
+type UserID = Capture "userId" ID
+type Strichliste = "user" :> Get '[JSON] (Page User)
+              :<|> "user" :> UserID :> Get '[JSON] User
+              :<|> "user" :> UserID :> "transaction"
+                :> Get '[JSON] (Page Transaction)
+              :<|> "user" :> UserID :> "transaction"
+                :> ReqBody '[JSON] Value
+                :> Post '[JSON] Transaction
+
+strichliste :: Proxy Strichliste
+strichliste = Proxy
+
+getUsers :: ServantT (Page User)
+getUser :: ID -> ServantT User
+getUserTransactions :: ID -> ServantT (Page Transaction)
+postTransaction :: ID -> Value -> ServantT Transaction
+getUsers :<|> getUser :<|> getUserTransactions :<|> postTransaction =
+    client strichliste host
+  where
+    host = BaseUrl Https "demo-api.strichliste.org" 443
+
+
 data UIState
   = UserMenu Text.Text -- ^ current filter
              (Trie.Trie User) -- ^ all users
@@ -74,16 +102,17 @@ data UIState
                     Centi -- ^ user's balance
                     (L.List Centi) -- ^ possible transactions
                     (L.List Transaction) -- ^ past transactions
+  | Error String
 
 
-app :: String -> M.App UIState V.Event
-app api = M.App { M.appDraw = drawUI
-                , M.appStartEvent = return
-                , M.appHandleEvent = appEvent api
-                , M.appAttrMap = const theMap
-                , M.appLiftVtyEvent = id
-                , M.appChooseCursor = M.showFirstCursor
-                }
+app :: M.App UIState V.Event
+app = M.App { M.appDraw = drawUI
+            , M.appStartEvent = return
+            , M.appHandleEvent = appEvent
+            , M.appAttrMap = const theMap
+            , M.appLiftVtyEvent = id
+            , M.appChooseCursor = M.showFirstCursor
+            }
 
 
 drawUI :: UIState -> [Widget]
@@ -105,16 +134,17 @@ drawUI (TransactionMenu _ balance amounts transactions) = [ui]
                   , transactionW
                   ]
               ]
+drawUI (Error err) = [str $ show err]
 
 
-appEvent :: String -> UIState -> V.Event -> M.EventM (M.Next UIState)
-appEvent api s@(UserMenu prefix users usersL) e =
+appEvent :: UIState -> V.Event -> M.EventM (M.Next UIState)
+appEvent s@(UserMenu prefix users usersL) e =
   case e of
        V.EvKey V.KEsc _ -> M.halt s
        V.EvKey V.KEnter _ ->
          case L.listSelectedElement usersL of
               Nothing -> M.continue s
-              Just (_, u) -> mkTransactionMenu api u >>= M.continue
+              Just (_, u) -> toEventM (getTransactionMenu u) >>= M.continue
        V.EvKey (V.KChar c) [] -> filterUsers $ prefix `Text.snoc` c
        V.EvKey V.KBS [] -> filterUsers $ if Text.null prefix
                                            then prefix
@@ -122,17 +152,19 @@ appEvent api s@(UserMenu prefix users usersL) e =
        ev -> M.continue $ UserMenu prefix users $ T.handleEvent ev usersL
   where
     filterUsers p = M.continue $ UserMenu p users $ matchingUsers p users
-appEvent api s@(TransactionMenu u balance amounts transactions) e =
+appEvent s@(TransactionMenu u balance amounts transactions) e =
   case e of
-       V.EvKey V.KEsc _ -> mkUserMenu api >>= M.continue
+       V.EvKey V.KEsc _ -> toEventM getUserMenu >>= M.continue
        V.EvKey V.KEnter _ ->
          case L.listSelectedElement amounts of
               Nothing -> M.continue s
-              Just (_, a) -> do
-                u' <- purchase api u a
-                s' <- mkTransactionMenu api u'
-                M.continue s'
+              Just (_, a) ->
+                toEventM (purchase u a >>= getTransactionMenu) >>= M.continue
        ev -> M.continue $ TransactionMenu u balance (T.handleEvent ev amounts) transactions
+appEvent s@(Error _) e =
+  case e of
+       V.EvKey V.KEsc _ -> M.halt s
+       _ -> toEventM getUserMenu >>= M.continue
 
 
 theMap :: A.AttrMap
@@ -142,20 +174,16 @@ theMap = A.attrMap V.defAttr
   ]
 
 
-mkTransactionMenu :: MonadIO io => String -> User -> io UIState
-mkTransactionMenu api u = liftIO $ do
-    transactionList <- getTransactions api u
-    return $ TransactionMenu u (userBalance u) actionList transactionList
+getTransactionMenu :: User -> ServantT UIState
+getTransactionMenu u =
+    TransactionMenu u (userBalance u) actionList <$> getTransactions u
   where
     actionList = L.list "Actions" drawActionListElement
                         [-0.5, -1, -1.5, -2.0]
 
-getTransactions :: MonadIO io => String -> User -> io (L.List Transaction)
-getTransactions api (User _ uid _ _) = liftIO $ do
-  resp <- W.get $ userTransactions api uid
-  page <- either (error . ("Unable to retrieve user transaction: " ++)) return $
-    eitherDecode $ resp ^. W.responseBody
-  return $ L.list "Transactions" drawTransactioListElement $ pageEntries page
+getTransactions :: User -> ServantT (L.List Transaction)
+getTransactions (User _ uid _ _) =
+  L.list "Transactions" drawTransactioListElement . pageEntries <$> getUserTransactions uid
 
 drawActionListElement :: Bool -> Centi -> Widget
 drawActionListElement _ amount = C.hCenter $ txt $ sformat shown amount
@@ -172,12 +200,13 @@ matchingUsers prefix users = L.list "Users" drawUserListElement matching
 drawUserListElement :: Bool -> User -> Widget
 drawUserListElement _ u = C.hCenter $ txt $ userName u
 
-mkUserMenu :: MonadIO io => String -> io UIState
-mkUserMenu api = liftIO $ do
-  resp <- W.get $ api <> "/user"
-  (usersT, usersL) <- either (error . ("Unable to retrieve user list: " ++)) return $ do
-    fmap indexUsers $ eitherDecode $ resp ^. W.responseBody
-  return $ UserMenu "" usersT $ L.list "Users" drawUserListElement usersL
+getUserMenu :: ServantT UIState
+getUserMenu = mkUserMenu <$> getUsers
+
+mkUserMenu :: Page User -> UIState
+mkUserMenu page = UserMenu "" usersT $ L.list "Users" drawUserListElement usersL
+  where
+    (usersT, usersL) = indexUsers page
 
 -- | Build a Trie and a sorted list of users from a page of users
 indexUsers :: Page User -> (Trie.Trie User, [User])
@@ -187,19 +216,18 @@ indexUsers = (id &&& Trie.elems) . toTrie . pageEntries
 toTrie :: [User] -> Trie.Trie User
 toTrie = Trie.fromList . map (Text.encodeUtf16LE . userName &&& id)
 
-purchase :: MonadIO io => String -> User -> Centi -> io User
-purchase api (User _ uid _ _) amount = liftIO $ do
-    void $ W.post (userTransactions api uid) $ object [ "value" .= amount ]
-    resp <- W.get $ formatToString (string % "/user/" % int) api uid
-    either (error . ("Unable to retrieve user information: " ++)) return $
-      eitherDecode $ resp ^. W.responseBody
+purchase :: User -> Centi -> ServantT User
+purchase (User _ uid _ _) amount = do
+  _ <- postTransaction uid (Value amount)
+  getUser uid
 
-userTransactions :: String -> Int -> String
-userTransactions = formatToString (string % "/user/" % int % "/transaction")
+toEventM :: MonadIO io => ServantT UIState -> io UIState
+toEventM servantState = liftIO $ runEitherT servantState >>= \case
+    Right st -> return st
+    Left err -> return $ Error $ show err
 
 
 main :: IO ()
 main = do
-  let api = "https://demo-api.strichliste.org"
-  users <- mkUserMenu api
-  void $ M.defaultMain (app api) users
+  users <- toEventM $ getUserMenu
+  void $ M.defaultMain app users
