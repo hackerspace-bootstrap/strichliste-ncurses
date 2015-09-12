@@ -99,7 +99,8 @@ data UIState
                     Centi -- ^ user's balance
                     (B.List Centi) -- ^ possible transactions
                     (B.List Transaction) -- ^ past transactions
-  | Error String
+  | Error String -- ^ Error description
+          UIState -- ^ Previous state
 
 
 app :: B.App UIState Vty.Event
@@ -131,7 +132,12 @@ drawUI (TransactionMenu _ balance amounts transactions) = [ui]
                   , transactionW
                   ]
               ]
-drawUI (Error err) = [B.str $ show err]
+drawUI (Error err prev) = errorW : drawUI prev
+  where
+    errorW = B.hCenter
+              $ B.withAttr errorAttr
+              $ B.borderWithLabel (B.str "An error occured")
+              $ B.str err
 
 
 appEvent :: UIState -> Vty.Event -> B.EventM (B.Next UIState)
@@ -141,7 +147,7 @@ appEvent s@(UserMenu prefix users usersL) e =
        Vty.EvKey Vty.KEnter _ ->
          case B.listSelectedElement usersL of
               Nothing -> B.continue s
-              Just (_, u) -> toEventM (getTransactionMenu u) >>= B.continue
+              Just (_, u) -> toEventM s (getTransactionMenu u) >>= B.continue
        Vty.EvKey (Vty.KChar c) [] -> filterUsers $ prefix `Text.snoc` c
        Vty.EvKey Vty.KBS [] -> filterUsers $ if Text.null prefix
                                            then prefix
@@ -151,25 +157,26 @@ appEvent s@(UserMenu prefix users usersL) e =
     filterUsers p = B.continue $ UserMenu p users $ matchingUsers p users
 appEvent s@(TransactionMenu u balance amounts transactions) e =
   case e of
-       Vty.EvKey Vty.KEsc _ -> toEventM getUserMenu >>= B.continue
+       Vty.EvKey Vty.KEsc _ -> toEventM s getUserMenu >>= B.continue
        Vty.EvKey Vty.KEnter _ ->
          case B.listSelectedElement amounts of
               Nothing -> B.continue s
               Just (_, a) ->
-                toEventM (purchase u a >>= getTransactionMenu) >>= B.continue
+                toEventM s (purchase u a >>= getTransactionMenu) >>= B.continue
        ev -> do
          newList <- (B.handleEvent ev amounts)
          B.continue $ TransactionMenu u balance newList transactions
-appEvent s@(Error _) e =
-  case e of
-       Vty.EvKey Vty.KEsc _ -> B.halt s
-       _ -> toEventM getUserMenu >>= B.continue
+appEvent (Error _ prev) _ = B.continue prev
 
+
+errorAttr :: B.AttrName
+errorAttr = B.attrName "errorMsg"
 
 theMap :: B.AttrMap
 theMap = B.attrMap Vty.defAttr
   [ (B.listAttr,            Vty.white `B.on` Vty.black)
   , (B.listSelectedAttr,    Vty.black `B.on` Vty.white)
+  , (errorAttr,             B.fg Vty.red)
   ]
 
 
@@ -220,13 +227,15 @@ purchase (User _ uid _ _) amount = do
   _ <- postTransaction uid (Value amount)
   getUser uid
 
-toEventM :: MonadIO io => ServantT UIState -> io UIState
-toEventM servantState = liftIO $ runEitherT servantState >>= \case
+toEventM :: MonadIO io => UIState -> ServantT UIState -> io UIState
+toEventM prev servantState = liftIO $ runEitherT servantState >>= \case
     Right st -> return st
-    Left err -> return $ Error $ show err
+    Left err -> return $ Error (show err) prev
 
+emptyState :: UIState
+emptyState = UserMenu "" Trie.empty $ B.list "Users" V.empty 1
 
 main :: IO ()
 main = do
-  users <- toEventM $ getUserMenu
+  users <- toEventM emptyState $ getUserMenu
   void $ B.defaultMain app users
