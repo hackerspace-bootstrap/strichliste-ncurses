@@ -21,8 +21,8 @@ executable sl-curses
   -- other-extensions:    
   ghc-options: -threaded -O2 -Wall
   build-depends:       base >=4.6 && <4.9,
-                       servant,
-                       servant-client,
+                       servant ==0.4.*,
+                       servant-client ==0.4.*,
                        brick ==0.2,
                        vty,
                        aeson,
