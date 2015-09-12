@@ -125,13 +125,14 @@ drawUI (TransactionMenu _ balance amounts transactions) = [ui]
     menu = B.vCenter $ B.hCenter menubox
     balanceW = B.hCenter $ B.txt $ sformat shown balance
     transactionW = B.renderList transactions drawTransactioListElement
-    ui = B.hBox [ menu
-              , B.borderWithLabel (B.str "User info") $ B.vBox
-                  [ balanceW
-                  , B.hBorderWithLabel (B.str "Past transactions")
-                  , transactionW
-                  ]
+    ui = B.hBox
+          [ menu
+          , B.borderWithLabel (B.str "User info") $ B.vBox
+              [ balanceW
+              , B.hBorderWithLabel (B.str "Past transactions")
+              , transactionW
               ]
+          ]
 drawUI (Error err prev) = errorW : drawUI prev
   where
     errorW = B.hCenter
@@ -143,21 +144,24 @@ drawUI (Error err prev) = errorW : drawUI prev
 appEvent :: UIState -> Vty.Event -> B.EventM (B.Next UIState)
 appEvent s@(UserMenu prefix users usersL) e =
   case e of
-       Vty.EvKey Vty.KEsc _ -> B.halt s
+       Vty.EvKey Vty.KEsc _ ->
+         B.halt s
        Vty.EvKey Vty.KEnter _ ->
          case B.listSelectedElement usersL of
               Nothing -> B.continue s
               Just (_, u) -> toEventM s (getTransactionMenu u) >>= B.continue
-       Vty.EvKey (Vty.KChar c) [] -> filterUsers $ prefix `Text.snoc` c
-       Vty.EvKey Vty.KBS [] -> filterUsers $ if Text.null prefix
-                                           then prefix
-                                           else Text.init prefix
-       ev -> B.handleEvent ev usersL >>= B.continue . UserMenu prefix users
+       Vty.EvKey (Vty.KChar c) [] ->
+         filterUsers $ prefix `Text.snoc` c
+       Vty.EvKey Vty.KBS [] ->
+         filterUsers $ if Text.null prefix then prefix else Text.init prefix
+       ev ->
+         B.handleEvent ev usersL >>= B.continue . UserMenu prefix users
   where
     filterUsers p = B.continue $ UserMenu p users $ matchingUsers p users
 appEvent s@(TransactionMenu u balance amounts transactions) e =
   case e of
-       Vty.EvKey Vty.KEsc _ -> toEventM s getUserMenu >>= B.continue
+       Vty.EvKey Vty.KEsc _ ->
+         toEventM s getUserMenu >>= B.continue
        Vty.EvKey Vty.KEnter _ ->
          case B.listSelectedElement amounts of
               Nothing -> B.continue s
@@ -188,8 +192,8 @@ getTransactionMenu u =
 
 getTransactions :: User -> ServantT (B.List Transaction)
 getTransactions (User _ uid _ _) = do
-  pastTrans <- getUserTransactions uid
-  return $ B.list "Transactions" (pageEntries pastTrans) 1
+    pastTrans <- getUserTransactions uid
+    return $ B.list "Transactions" (pageEntries pastTrans) 1
 
 drawActionListElement :: Bool -> Centi -> B.Widget
 drawActionListElement _ amount = B.hCenter $ B.txt $ sformat shown amount
@@ -224,8 +228,8 @@ toTrie = Trie.fromList . V.toList . V.map (Text.encodeUtf16LE . userName &&& id)
 
 purchase :: User -> Centi -> ServantT User
 purchase (User _ uid _ _) amount = do
-  _ <- postTransaction uid (Value amount)
-  getUser uid
+    _ <- postTransaction uid (Value amount)
+    getUser uid
 
 toEventM :: MonadIO io => UIState -> ServantT UIState -> io UIState
 toEventM prev servantState = liftIO $ runEitherT servantState >>= \case
@@ -237,5 +241,5 @@ emptyState = UserMenu "" Trie.empty $ B.list "Users" V.empty 1
 
 main :: IO ()
 main = do
-  users <- toEventM emptyState $ getUserMenu
-  void $ B.defaultMain app users
+    users <- toEventM emptyState $ getUserMenu
+    void $ B.defaultMain app users
