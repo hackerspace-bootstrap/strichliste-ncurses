@@ -23,13 +23,14 @@ executable sl-curses
   build-depends:       base >=4.6 && <4.9,
                        servant,
                        servant-client,
-                       brick,
+                       brick ==0.2,
                        vty,
                        aeson,
                        text,
                        either,
                        formatting,
                        transformers,
-                       bytestring-trie
+                       bytestring-trie,
+                       vector
   -- hs-source-dirs:      
   default-language:    Haskell2010

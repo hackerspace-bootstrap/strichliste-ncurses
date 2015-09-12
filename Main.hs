@@ -1,13 +1,9 @@
 {-# Language OverloadedStrings, DataKinds, TypeOperators, LambdaCase #-}
 
-import qualified Brick.Main as M
-import qualified Brick.Types as T
+import qualified Brick as B
 import qualified Brick.Widgets.Border as B
-import qualified Brick.Widgets.List as L
-import qualified Brick.Widgets.Center as C
-import qualified Brick.AttrMap as A
-import Brick.Widgets.Core (Widget, txt, str, vBox, hBox)
-import Brick.Util (on)
+import qualified Brick.Widgets.List as B
+import qualified Brick.Widgets.Center as B
 import Control.Arrow ((&&&))
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -17,11 +13,12 @@ import Data.Aeson ( FromJSON, parseJSON, ToJSON, toJSON, (.:), (.:?), (.=)
                   )
 import Data.Fixed
 import Data.Proxy
+import qualified Data.Vector as V
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Trie as Trie
 import Formatting
-import qualified Graphics.Vty as V
+import qualified Graphics.Vty as Vty
 import Servant.API
 import Servant.Client
 
@@ -31,7 +28,7 @@ data Page a = Page
   { pageOverallCount :: Int
   , pageLimit :: Maybe Int
   , pageOffset :: Maybe Int
-  , pageEntries :: [a]
+  , pageEntries :: V.Vector a
   }
 
 instance FromJSON a => FromJSON (Page a) where
@@ -97,80 +94,82 @@ getUsers :<|> getUser :<|> getUserTransactions :<|> postTransaction =
 data UIState
   = UserMenu Text.Text -- ^ current filter
              (Trie.Trie User) -- ^ all users
-             (L.List User) -- ^ currently displayed users
+             (B.List User) -- ^ currently displayed users
   | TransactionMenu User -- ^ selected user
                     Centi -- ^ user's balance
-                    (L.List Centi) -- ^ possible transactions
-                    (L.List Transaction) -- ^ past transactions
+                    (B.List Centi) -- ^ possible transactions
+                    (B.List Transaction) -- ^ past transactions
   | Error String
 
 
-app :: M.App UIState V.Event
-app = M.App { M.appDraw = drawUI
-            , M.appStartEvent = return
-            , M.appHandleEvent = appEvent
-            , M.appAttrMap = const theMap
-            , M.appLiftVtyEvent = id
-            , M.appChooseCursor = M.showFirstCursor
+app :: B.App UIState Vty.Event
+app = B.App { B.appDraw = drawUI
+            , B.appStartEvent = return
+            , B.appHandleEvent = appEvent
+            , B.appAttrMap = const theMap
+            , B.appLiftVtyEvent = id
+            , B.appChooseCursor = B.showFirstCursor
             }
 
 
-drawUI :: UIState -> [Widget]
+drawUI :: UIState -> [B.Widget]
 drawUI (UserMenu prefix _ users) = [ui]
   where
-    box = B.borderWithLabel "Select user" $ L.renderList users
-    filterBox = B.borderWithLabel "Filter" $ C.hCenter $ txt prefix
-    ui = vBox $ C.hCenter box : if Text.null prefix then [] else [ filterBox ]
+    box = B.borderWithLabel (B.str "Select user") $ B.renderList users drawUserListElement
+    filterBox = B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.txt prefix
+    ui = B.vBox $ B.hCenter box : if Text.null prefix then [] else [ filterBox ]
 drawUI (TransactionMenu _ balance amounts transactions) = [ui]
   where
-    menubox = B.borderWithLabel "Select amounts" $ L.renderList amounts
-    menu = C.vCenter $ C.hCenter menubox
-    balanceW = C.hCenter $ txt $ sformat shown balance
-    transactionW = L.renderList transactions
-    ui = hBox [ menu
-              , B.borderWithLabel "User info" $ vBox
+    menubox = B.borderWithLabel (B.str "Select amounts") $ B.renderList amounts drawActionListElement
+    menu = B.vCenter $ B.hCenter menubox
+    balanceW = B.hCenter $ B.txt $ sformat shown balance
+    transactionW = B.renderList transactions drawTransactioListElement
+    ui = B.hBox [ menu
+              , B.borderWithLabel (B.str "User info") $ B.vBox
                   [ balanceW
-                  , B.hBorderWithLabel "Past transactions"
+                  , B.hBorderWithLabel (B.str "Past transactions")
                   , transactionW
                   ]
               ]
-drawUI (Error err) = [str $ show err]
+drawUI (Error err) = [B.str $ show err]
 
 
-appEvent :: UIState -> V.Event -> M.EventM (M.Next UIState)
+appEvent :: UIState -> Vty.Event -> B.EventM (B.Next UIState)
 appEvent s@(UserMenu prefix users usersL) e =
   case e of
-       V.EvKey V.KEsc _ -> M.halt s
-       V.EvKey V.KEnter _ ->
-         case L.listSelectedElement usersL of
-              Nothing -> M.continue s
-              Just (_, u) -> toEventM (getTransactionMenu u) >>= M.continue
-       V.EvKey (V.KChar c) [] -> filterUsers $ prefix `Text.snoc` c
-       V.EvKey V.KBS [] -> filterUsers $ if Text.null prefix
+       Vty.EvKey Vty.KEsc _ -> B.halt s
+       Vty.EvKey Vty.KEnter _ ->
+         case B.listSelectedElement usersL of
+              Nothing -> B.continue s
+              Just (_, u) -> toEventM (getTransactionMenu u) >>= B.continue
+       Vty.EvKey (Vty.KChar c) [] -> filterUsers $ prefix `Text.snoc` c
+       Vty.EvKey Vty.KBS [] -> filterUsers $ if Text.null prefix
                                            then prefix
                                            else Text.init prefix
-       ev -> M.continue $ UserMenu prefix users $ T.handleEvent ev usersL
+       ev -> B.handleEvent ev usersL >>= B.continue . UserMenu prefix users
   where
-    filterUsers p = M.continue $ UserMenu p users $ matchingUsers p users
+    filterUsers p = B.continue $ UserMenu p users $ matchingUsers p users
 appEvent s@(TransactionMenu u balance amounts transactions) e =
   case e of
-       V.EvKey V.KEsc _ -> toEventM getUserMenu >>= M.continue
-       V.EvKey V.KEnter _ ->
-         case L.listSelectedElement amounts of
-              Nothing -> M.continue s
+       Vty.EvKey Vty.KEsc _ -> toEventM getUserMenu >>= B.continue
+       Vty.EvKey Vty.KEnter _ ->
+         case B.listSelectedElement amounts of
+              Nothing -> B.continue s
               Just (_, a) ->
-                toEventM (purchase u a >>= getTransactionMenu) >>= M.continue
-       ev -> M.continue $ TransactionMenu u balance (T.handleEvent ev amounts) transactions
+                toEventM (purchase u a >>= getTransactionMenu) >>= B.continue
+       ev -> do
+         newList <- (B.handleEvent ev amounts)
+         B.continue $ TransactionMenu u balance newList transactions
 appEvent s@(Error _) e =
   case e of
-       V.EvKey V.KEsc _ -> M.halt s
-       _ -> toEventM getUserMenu >>= M.continue
+       Vty.EvKey Vty.KEsc _ -> B.halt s
+       _ -> toEventM getUserMenu >>= B.continue
 
 
-theMap :: A.AttrMap
-theMap = A.attrMap V.defAttr
-  [ (L.listAttr,            V.white `on` V.black)
-  , (L.listSelectedAttr,    V.black `on` V.white)
+theMap :: B.AttrMap
+theMap = B.attrMap Vty.defAttr
+  [ (B.listAttr,            Vty.white `B.on` Vty.black)
+  , (B.listSelectedAttr,    Vty.black `B.on` Vty.white)
   ]
 
 
@@ -178,43 +177,43 @@ getTransactionMenu :: User -> ServantT UIState
 getTransactionMenu u =
     TransactionMenu u (userBalance u) actionList <$> getTransactions u
   where
-    actionList = L.list "Actions" drawActionListElement
-                        [-0.5, -1, -1.5, -2.0]
+    actionList = B.list "Actions" (V.fromList [-0.5, -1, -1.5, -2.0]) 1
 
-getTransactions :: User -> ServantT (L.List Transaction)
-getTransactions (User _ uid _ _) =
-  L.list "Transactions" drawTransactioListElement . pageEntries <$> getUserTransactions uid
+getTransactions :: User -> ServantT (B.List Transaction)
+getTransactions (User _ uid _ _) = do
+  pastTrans <- getUserTransactions uid
+  return $ B.list "Transactions" (pageEntries pastTrans) 1
 
-drawActionListElement :: Bool -> Centi -> Widget
-drawActionListElement _ amount = C.hCenter $ txt $ sformat shown amount
+drawActionListElement :: Bool -> Centi -> B.Widget
+drawActionListElement _ amount = B.hCenter $ B.txt $ sformat shown amount
 
-drawTransactioListElement :: Bool -> Transaction -> Widget
+drawTransactioListElement :: Bool -> Transaction -> B.Widget
 drawTransactioListElement _ (Transaction v cd _ _) =
-  txt $ sformat (stext % ": " % shown % "€") cd v
+  B.txt $ sformat (stext % ": " % shown % "€") cd v
 
-matchingUsers :: Text.Text -> Trie.Trie User -> L.List User
-matchingUsers prefix users = L.list "Users" drawUserListElement matching
+matchingUsers :: Text.Text -> Trie.Trie User -> B.List User
+matchingUsers prefix users = B.list "Users" (V.fromList matching) 1
   where
     matching = Trie.elems $ Trie.submap (Text.encodeUtf16LE prefix) users
 
-drawUserListElement :: Bool -> User -> Widget
-drawUserListElement _ u = C.hCenter $ txt $ userName u
+drawUserListElement :: Bool -> User -> B.Widget
+drawUserListElement _ u = B.hCenter $ B.txt $ userName u
 
 getUserMenu :: ServantT UIState
 getUserMenu = mkUserMenu <$> getUsers
 
 mkUserMenu :: Page User -> UIState
-mkUserMenu page = UserMenu "" usersT $ L.list "Users" drawUserListElement usersL
+mkUserMenu page = UserMenu "" usersT $ B.list "Users" usersL 1
   where
     (usersT, usersL) = indexUsers page
 
 -- | Build a Trie and a sorted list of users from a page of users
-indexUsers :: Page User -> (Trie.Trie User, [User])
-indexUsers = (id &&& Trie.elems) . toTrie . pageEntries
+indexUsers :: Page User -> (Trie.Trie User, V.Vector User)
+indexUsers = (id &&& V.fromList . Trie.elems) . toTrie . pageEntries
 
 -- | Build a Trie from a list of users
-toTrie :: [User] -> Trie.Trie User
-toTrie = Trie.fromList . map (Text.encodeUtf16LE . userName &&& id)
+toTrie :: V.Vector User -> Trie.Trie User
+toTrie = Trie.fromList . V.toList . V.map (Text.encodeUtf16LE . userName &&& id)
 
 purchase :: User -> Centi -> ServantT User
 purchase (User _ uid _ _) amount = do
@@ -230,4 +229,4 @@ toEventM servantState = liftIO $ runEitherT servantState >>= \case
 main :: IO ()
 main = do
   users <- toEventM $ getUserMenu
-  void $ M.defaultMain app users
+  void $ B.defaultMain app users
