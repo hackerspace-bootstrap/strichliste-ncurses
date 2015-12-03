@@ -105,7 +105,6 @@ data UIState
   | Error String -- ^ Error description
           UIState -- ^ Previous state
 
-
 app :: Chan MyEvent -> B.App UIState MyEvent
 app chan = B.App
   { B.appDraw = drawUI
@@ -118,63 +117,65 @@ app chan = B.App
 
 
 drawUI :: UIState -> [B.Widget]
-drawUI (UserMenu prefix _ users) = [ui]
-  where
-    box = B.borderWithLabel (B.str "Select user") $ B.renderList users drawUserListElement
-    filterBox = B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.txt prefix
-    ui = B.vBox $ B.hCenter box : if Text.null prefix then [] else [ filterBox ]
-drawUI (TransactionMenu _ balance amounts transactions) = [ui]
-  where
-    menubox = B.borderWithLabel (B.str "Select amounts") $ B.renderList amounts drawActionListElement
-    menu = B.vCenter $ B.hCenter menubox
-    balanceW = B.hCenter $ B.txt $ sformat shown balance
-    transactionW = B.renderList transactions drawTransactioListElement
-    ui = B.hBox
-          [ menu
-          , B.borderWithLabel (B.str "User info") $ B.vBox
-              [ balanceW
-              , B.hBorderWithLabel (B.str "Past transactions")
-              , transactionW
-              ]
-          ]
-drawUI (Error err prev) = errorW : drawUI prev
-  where
-    errorW = B.hCenter
-              $ B.withAttr errorAttr
-              $ B.borderWithLabel (B.str "An error occured")
-              $ B.str err
+drawUI uiState =
+  case uiState of
+    UserMenu prefix _ users ->
+      let box = B.borderWithLabel (B.str "Select user") $ B.renderList users drawUserListElement
+          filterBox = B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.txt prefix
+          ui = B.vBox $ B.hCenter box : if Text.null prefix then [] else [ filterBox ]
+      in [ui]
+    TransactionMenu _ balance amounts transactions ->
+      let menubox = B.borderWithLabel (B.str "Select amounts") $ B.renderList amounts drawActionListElement
+          menu = B.vCenter $ B.hCenter menubox
+          balanceW = B.hCenter $ B.txt $ sformat shown balance
+          transactionW = B.renderList transactions drawTransactioListElement
+          ui = B.hBox
+                [ menu
+                , B.borderWithLabel (B.str "User info") $ B.vBox
+                    [ balanceW
+                    , B.hBorderWithLabel (B.str "Past transactions")
+                    , transactionW
+                    ]
+                ]
+      in [ui]
+    Error err prev ->
+      let errorW = B.hCenter
+                 $ B.withAttr errorAttr
+                 $ B.borderWithLabel (B.str "An error occured")
+                 $ B.str err
+      in errorW : drawUI prev
 
 
 appEvent :: Chan MyEvent -> UIState -> MyEvent -> B.EventM (B.Next UIState)
-appEvent chan s@(UserMenu prefix users usersL) e =
-  case unsafeToVtyEvent e of
+appEvent chan uiState e =
+  case uiState of
+    UserMenu prefix users usersL -> case unsafeToVtyEvent e of
        Vty.EvKey Vty.KEsc _ ->
-         B.halt s
+         B.halt uiState
        Vty.EvKey Vty.KEnter _ ->
          case B.listSelectedElement usersL of
-              Nothing -> B.continue s
-              Just (_, u) -> toEventM s (getTransactionMenu u) >>= B.continue
+              Nothing -> B.continue uiState
+              Just (_, u) -> toEventM uiState (getTransactionMenu u) >>= B.continue
        Vty.EvKey (Vty.KChar c) [] ->
-         filterUsers $ prefix `Text.snoc` c
+         filterUsers users $ prefix `Text.snoc` c
        Vty.EvKey Vty.KBS [] ->
-         filterUsers $ if Text.null prefix then prefix else Text.init prefix
+         filterUsers users $ if Text.null prefix then prefix else Text.init prefix
        ev ->
          B.handleEvent ev usersL >>= B.continue . UserMenu prefix users
-  where
-    filterUsers p = B.continue $ UserMenu p users $ matchingUsers p users
-appEvent chan s@(TransactionMenu u balance amounts transactions) e =
-  case unsafeToVtyEvent e of
+    TransactionMenu u balance amounts transactions -> case unsafeToVtyEvent e of
        Vty.EvKey Vty.KEsc _ ->
-         toEventM s getUserMenu >>= B.continue
+         toEventM uiState getUserMenu >>= B.continue
        Vty.EvKey Vty.KEnter _ ->
          case B.listSelectedElement amounts of
-              Nothing -> B.continue s
+              Nothing -> B.continue uiState
               Just (_, a) ->
-                toEventM s (purchase u a >>= getTransactionMenu) >>= B.continue
+                toEventM uiState (purchase u a >>= getTransactionMenu) >>= B.continue
        ev -> do
-         newList <- (B.handleEvent ev amounts)
+         newList <- B.handleEvent ev amounts
          B.continue $ TransactionMenu u balance newList transactions
-appEvent chan (Error _ prev) _ = B.continue prev
+    Error _ prev -> B.continue prev
+  where
+    filterUsers users p = B.continue $ UserMenu p users $ matchingUsers p users
 
 unsafeToVtyEvent :: MyEvent -> Vty.Event
 unsafeToVtyEvent (VtyEvent e) = e
