@@ -5,7 +5,7 @@ import qualified Brick.Widgets.Border as B
 import qualified Brick.Widgets.List as B
 import qualified Brick.Widgets.Center as B
 import Control.Arrow ((&&&))
-import Control.Concurrent (Chan, newChan)
+import Control.Concurrent (Chan, newChan, writeChan, forkIO)
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Either (EitherT, runEitherT)
@@ -93,6 +93,8 @@ getUsers :<|> getUser :<|> getUserTransactions :<|> postTransaction =
 
 data MyEvent
   = VtyEvent Vty.Event
+  | PurchaseSuccessful Transaction
+  | PurchaseFailed String
 
 data UIState
   = UserMenu Text.Text -- ^ current filter
@@ -102,6 +104,8 @@ data UIState
                     Centi -- ^ user's balance
                     (B.List Centi) -- ^ possible transactions
                     (B.List Transaction) -- ^ past transactions
+  | Processing User -- ^ User currently purchasing
+               UIState -- ^ Previous state
   | Error String -- ^ Error description
           UIState -- ^ Previous state
 
@@ -138,6 +142,9 @@ drawUI uiState =
                     ]
                 ]
       in [ui]
+    Processing _ prev ->
+      let w = B.hCenter $ B.border $ B.str "Processing..."
+      in w : drawUI prev
     Error err prev ->
       let errorW = B.hCenter
                  $ B.withAttr errorAttr
@@ -168,11 +175,16 @@ appEvent chan uiState e =
        Vty.EvKey Vty.KEnter _ ->
          case B.listSelectedElement amounts of
               Nothing -> B.continue uiState
-              Just (_, a) ->
-                toEventM uiState (purchase u a >>= getTransactionMenu) >>= B.continue
+              Just (_, a) -> do
+                liftIO $ purchase u a chan
+                B.continue $ Processing u uiState
        ev -> do
          newList <- B.handleEvent ev amounts
          B.continue $ TransactionMenu u balance newList transactions
+    Processing u prev -> case e of
+       VtyEvent _ -> B.continue uiState -- TODO: ability to abort action
+       PurchaseSuccessful _trans -> toEventM uiState (getTransactionMenu u) >>= B.continue
+       PurchaseFailed err -> B.continue (Error err prev)
     Error _ prev -> B.continue prev
   where
     filterUsers users p = B.continue $ UserMenu p users $ matchingUsers p users
@@ -193,8 +205,9 @@ theMap = B.attrMap Vty.defAttr
 
 
 getTransactionMenu :: User -> ServantT UIState
-getTransactionMenu u =
-    TransactionMenu u (userBalance u) actionList <$> getTransactions u
+getTransactionMenu u = do
+    u' <- getUser $ userID u
+    TransactionMenu u' (userBalance u') actionList <$> getTransactions u'
   where
     actionList = B.list "Actions" (V.fromList [-0.5, -1, -1.5, -2.0]) 1
 
@@ -234,10 +247,13 @@ indexUsers = (id &&& V.fromList . Trie.elems) . toTrie . pageEntries
 toTrie :: V.Vector User -> Trie.Trie User
 toTrie = Trie.fromList . V.toList . V.map (Text.encodeUtf16LE . userName &&& id)
 
-purchase :: User -> Centi -> ServantT User
-purchase (User _ uid _ _) amount = do
-    _ <- postTransaction uid (Value amount)
-    getUser uid
+purchase :: MonadIO io => User -> Centi -> Chan MyEvent -> io ()
+purchase (User _ uid _ _) amount chan = liftIO $ void $ forkIO $ do
+    result <- eitherToEvent <$> runEitherT (postTransaction uid (Value amount))
+    writeChan chan result
+  where
+    eitherToEvent (Left err) = PurchaseFailed (show err)
+    eitherToEvent (Right trans) = PurchaseSuccessful trans
 
 toEventM :: MonadIO io => UIState -> ServantT UIState -> io UIState
 toEventM prev servantState = liftIO $ runEitherT servantState >>= \case
