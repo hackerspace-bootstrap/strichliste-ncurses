@@ -5,6 +5,7 @@ import qualified Brick.Widgets.Border as B
 import qualified Brick.Widgets.List as B
 import qualified Brick.Widgets.Center as B
 import Control.Arrow ((&&&))
+import Control.Concurrent (Chan, newChan)
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Either (EitherT, runEitherT)
@@ -90,6 +91,8 @@ getUsers :<|> getUser :<|> getUserTransactions :<|> postTransaction =
   where
     host = BaseUrl Https "demo-api.strichliste.org" 443
 
+data MyEvent
+  = VtyEvent Vty.Event
 
 data UIState
   = UserMenu Text.Text -- ^ current filter
@@ -103,14 +106,15 @@ data UIState
           UIState -- ^ Previous state
 
 
-app :: B.App UIState Vty.Event
-app = B.App { B.appDraw = drawUI
-            , B.appStartEvent = return
-            , B.appHandleEvent = appEvent
-            , B.appAttrMap = const theMap
-            , B.appLiftVtyEvent = id
-            , B.appChooseCursor = B.showFirstCursor
-            }
+app :: Chan MyEvent -> B.App UIState MyEvent
+app chan = B.App
+  { B.appDraw = drawUI
+  , B.appStartEvent = return
+  , B.appHandleEvent = appEvent chan
+  , B.appAttrMap = const theMap
+  , B.appLiftVtyEvent = VtyEvent
+  , B.appChooseCursor = B.showFirstCursor
+  }
 
 
 drawUI :: UIState -> [B.Widget]
@@ -141,9 +145,9 @@ drawUI (Error err prev) = errorW : drawUI prev
               $ B.str err
 
 
-appEvent :: UIState -> Vty.Event -> B.EventM (B.Next UIState)
-appEvent s@(UserMenu prefix users usersL) e =
-  case e of
+appEvent :: Chan MyEvent -> UIState -> MyEvent -> B.EventM (B.Next UIState)
+appEvent chan s@(UserMenu prefix users usersL) e =
+  case unsafeToVtyEvent e of
        Vty.EvKey Vty.KEsc _ ->
          B.halt s
        Vty.EvKey Vty.KEnter _ ->
@@ -158,8 +162,8 @@ appEvent s@(UserMenu prefix users usersL) e =
          B.handleEvent ev usersL >>= B.continue . UserMenu prefix users
   where
     filterUsers p = B.continue $ UserMenu p users $ matchingUsers p users
-appEvent s@(TransactionMenu u balance amounts transactions) e =
-  case e of
+appEvent chan s@(TransactionMenu u balance amounts transactions) e =
+  case unsafeToVtyEvent e of
        Vty.EvKey Vty.KEsc _ ->
          toEventM s getUserMenu >>= B.continue
        Vty.EvKey Vty.KEnter _ ->
@@ -170,8 +174,11 @@ appEvent s@(TransactionMenu u balance amounts transactions) e =
        ev -> do
          newList <- (B.handleEvent ev amounts)
          B.continue $ TransactionMenu u balance newList transactions
-appEvent (Error _ prev) _ = B.continue prev
+appEvent chan (Error _ prev) _ = B.continue prev
 
+unsafeToVtyEvent :: MyEvent -> Vty.Event
+unsafeToVtyEvent (VtyEvent e) = e
+unsafeToVtyEvent _ = error "Invalid event received!"
 
 errorAttr :: B.AttrName
 errorAttr = B.attrName "errorMsg"
@@ -241,5 +248,6 @@ emptyState = UserMenu "" Trie.empty $ B.list "Users" V.empty 1
 
 main :: IO ()
 main = do
+    chan <- newChan
     users <- toEventM emptyState $ getUserMenu
-    void $ B.defaultMain app users
+    void $ B.customMain (Vty.mkVty mempty) chan (app chan) users
