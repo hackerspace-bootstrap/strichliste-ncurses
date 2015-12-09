@@ -1,11 +1,13 @@
-{-# Language OverloadedStrings, DataKinds, TypeOperators, LambdaCase #-}
+{-# Language OverloadedStrings, DataKinds, TypeOperators, LambdaCase,
+             ScopedTypeVariables #-}
 
 import qualified Brick as B
 import qualified Brick.Widgets.Border as B
 import qualified Brick.Widgets.List as B
 import qualified Brick.Widgets.Center as B
 import Control.Arrow ((&&&))
-import Control.Concurrent (Chan, newChan, writeChan, forkIO)
+import Control.Concurrent (Chan, newChan, writeChan, forkIO, ThreadId)
+import Control.Exception (handle, throwTo, mask, Exception, SomeException)
 import Control.Monad (void)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Trans.Either (EitherT, runEitherT)
@@ -18,6 +20,7 @@ import qualified Data.Vector as V
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 import qualified Data.Trie as Trie
+import Data.Typeable (Typeable)
 import Formatting
 import qualified Graphics.Vty as Vty
 import Servant.API
@@ -105,6 +108,7 @@ data UIState
                     (B.List Centi) -- ^ possible transactions
                     (B.List Transaction) -- ^ past transactions
   | Processing User -- ^ User currently purchasing
+               ThreadId -- ^ Thread doing the work
                UIState -- ^ Previous state
   | Error String -- ^ Error description
           UIState -- ^ Previous state
@@ -142,7 +146,7 @@ drawUI uiState =
                     ]
                 ]
       in [ui]
-    Processing _ prev ->
+    Processing _ _ prev ->
       let w = B.hCenter $ B.border $ B.str "Processing..."
       in w : drawUI prev
     Error err prev ->
@@ -176,13 +180,15 @@ appEvent chan uiState e =
          case B.listSelectedElement amounts of
               Nothing -> B.continue uiState
               Just (_, a) -> do
-                liftIO $ purchase u a chan
-                B.continue $ Processing u uiState
+                tid <- liftIO $ purchase u a chan
+                B.continue $ Processing u tid uiState
        ev -> do
          newList <- B.handleEvent ev amounts
          B.continue $ TransactionMenu u balance newList transactions
-    Processing u prev -> case e of
-       VtyEvent _ -> B.continue uiState -- TODO: ability to abort action
+    Processing u tid prev -> case e of
+       VtyEvent (Vty.EvKey Vty.KEsc _) ->
+         liftIO (throwTo tid Abort) >> B.continue uiState
+       VtyEvent _ -> B.continue uiState
        PurchaseSuccessful _trans -> toEventM uiState (getTransactionMenu u) >>= B.continue
        PurchaseFailed err -> B.continue (Error err prev)
     Error _ prev -> B.continue prev
@@ -247,10 +253,17 @@ indexUsers = (id &&& V.fromList . Trie.elems) . toTrie . pageEntries
 toTrie :: V.Vector User -> Trie.Trie User
 toTrie = Trie.fromList . V.toList . V.map (Text.encodeUtf16LE . userName &&& id)
 
-purchase :: MonadIO io => User -> Centi -> Chan MyEvent -> io ()
-purchase (User _ uid _ _) amount chan = liftIO $ void $ forkIO $ do
-    result <- eitherToEvent <$> runEitherT (postTransaction uid (Value amount))
-    writeChan chan result
+data Abort = Abort deriving (Show, Typeable)
+
+instance Exception Abort
+
+purchase :: MonadIO io => User -> Centi -> Chan MyEvent -> io ThreadId
+purchase (User _ uid _ _) amount chan = liftIO $ mask $ \restore -> forkIO $
+    handle (\(_ :: Abort) -> writeChan chan (PurchaseFailed "Aborted")) $
+    handle (\(e :: SomeException) -> writeChan chan (PurchaseFailed (show e))) $
+    restore $
+      runEitherT (postTransaction uid (Value amount))
+      >>= writeChan chan . eitherToEvent
   where
     eitherToEvent (Left err) = PurchaseFailed (show err)
     eitherToEvent (Right trans) = PurchaseSuccessful trans
