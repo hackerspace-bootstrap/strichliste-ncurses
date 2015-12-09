@@ -96,7 +96,7 @@ getUsers :<|> getUser :<|> getUserTransactions :<|> postTransaction =
 
 data MyEvent
   = VtyEvent Vty.Event
-  | PurchaseSuccessful Transaction
+  | PurchaseSuccessful UIState
   | PurchaseFailed String
 
 data UIState
@@ -189,7 +189,7 @@ appEvent chan uiState e =
        VtyEvent (Vty.EvKey Vty.KEsc _) ->
          liftIO (throwTo tid Abort) >> B.continue uiState
        VtyEvent _ -> B.continue uiState
-       PurchaseSuccessful _trans -> toEventM uiState (getTransactionMenu u) >>= B.continue
+       PurchaseSuccessful newState -> B.continue newState
        PurchaseFailed err -> B.continue (Error err prev)
     Error _ prev -> B.continue prev
   where
@@ -258,15 +258,15 @@ data Abort = Abort deriving (Show, Typeable)
 instance Exception Abort
 
 purchase :: MonadIO io => User -> Centi -> Chan MyEvent -> io ThreadId
-purchase (User _ uid _ _) amount chan = liftIO $ mask $ \restore -> forkIO $
+purchase u@(User _ uid _ _) amount chan = liftIO $ mask $ \restore -> forkIO $
     handle (\(_ :: Abort) -> writeChan chan (PurchaseFailed "Aborted")) $
     handle (\(e :: SomeException) -> writeChan chan (PurchaseFailed (show e))) $
     restore $
-      runEitherT (postTransaction uid (Value amount))
+      runEitherT (postTransaction uid (Value amount) >> getTransactionMenu u)
       >>= writeChan chan . eitherToEvent
   where
     eitherToEvent (Left err) = PurchaseFailed (show err)
-    eitherToEvent (Right trans) = PurchaseSuccessful trans
+    eitherToEvent (Right uiState) = PurchaseSuccessful uiState
 
 toEventM :: MonadIO io => UIState -> ServantT UIState -> io UIState
 toEventM prev servantState = liftIO $ runEitherT servantState >>= \case
