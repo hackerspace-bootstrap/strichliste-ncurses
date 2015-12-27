@@ -157,25 +157,23 @@ drawUI :: UIState -> [B.Widget]
 drawUI uiState =
   case uiState of
     UserMenu (FL prefix _ _ users) ->
-      let box = B.borderWithLabel (B.str "Select user") $ B.renderList users drawUserListElement
-          filterBox = B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.str prefix
-          ui = B.vBox $ B.hCenter box : if null prefix then [] else [ filterBox ]
-      in [ui]
+      let selectW = boxedListW "Select user" users drawUserListElement
+      in [ B.vBox $ selectW : filterW prefix ]
     TransactionMenu _ balance (FL prefix _ _ amounts) transactions ->
-      let menubox = B.borderWithLabel (B.str "Select amounts") $ B.renderList amounts drawActionListElement
-          menu = B.vCenter $ B.hCenter menubox
-          balanceW = B.hCenter $ B.txt $ sformat shown balance
-          transactionW = B.renderList transactions drawTransactioListElement
-          filterBox = B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.str prefix
-          ui = B.hBox
-                [ B.vBox $ menu : if null prefix then [] else [ filterBox ]
-                , B.borderWithLabel (B.str "User info") $ B.vBox
-                    [ balanceW
-                    , B.hBorderWithLabel (B.str "Past transactions")
-                    , transactionW
-                    ]
-                ]
-      in [ui]
+      let selectW = boxedListW "Select amounts" amounts drawAmountListElement
+          balanceW = B.borderWithLabel (B.str "Balance") $ B.hCenter
+                   $ B.txt (sformat shown balance)
+          transactionsW = boxedListW "Past transactions" transactions drawTransactioListElement
+      in [ B.hBox
+            [ B.vBox
+               $ selectW
+               : filterW prefix
+            , B.vBox
+               [ balanceW
+               , transactionsW
+               ]
+            ]
+         ]
     Processing _ prev ->
       let w = B.hCenter $ B.border $ B.str "Processing..."
       in w : drawUI prev
@@ -185,6 +183,15 @@ drawUI uiState =
                  $ B.borderWithLabel (B.str "An error occured")
                  $ B.str err
       in errorW : drawUI prev
+
+boxedListW :: [Char] -> B.List a -> (Bool -> a -> B.Widget) -> B.Widget
+boxedListW name l drawL = B.borderWithLabel (B.str name) $ B.renderList l drawL
+
+filterW :: [Char] -> [B.Widget]
+filterW prefix
+  | null prefix = []
+  | otherwise = [ B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.str prefix
+                ]
 
 errorAttr :: B.AttrName
 errorAttr = B.attrName "errorMsg"
@@ -196,12 +203,12 @@ theMap = B.attrMap Vty.defAttr
   , (errorAttr,             B.fg Vty.red)
   ]
 
-drawActionListElement :: Bool -> Centi -> B.Widget
-drawActionListElement _ amount = B.hCenter $ B.txt $ sformat shown amount
+drawAmountListElement :: Bool -> Centi -> B.Widget
+drawAmountListElement _ amount = B.hCenter $ B.txt $ sformat shown amount
 
 drawTransactioListElement :: Bool -> Transaction -> B.Widget
 drawTransactioListElement _ (Transaction v cd _ _) =
-  B.txt $ sformat (stext % ": " % shown % "€") cd v
+  B.hCenter $ B.txt $ sformat (stext % ": " % shown % "€") cd v
 
 drawUserListElement :: Bool -> User -> B.Widget
 drawUserListElement _ u = B.hCenter $ B.txt $ userName u
