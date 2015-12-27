@@ -107,8 +107,7 @@ data UIState
                     Centi -- ^ user's balance
                     (B.List Centi) -- ^ possible transactions
                     (B.List Transaction) -- ^ past transactions
-  | Processing User -- ^ User currently purchasing
-               ThreadId -- ^ Thread doing the work
+  | Processing ThreadId -- ^ Thread doing the work
                UIState -- ^ Previous state
   | Error String -- ^ Error description
           UIState -- ^ Previous state
@@ -146,7 +145,7 @@ drawUI uiState =
                     ]
                 ]
       in [ui]
-    Processing _ _ prev ->
+    Processing _ prev ->
       let w = B.hCenter $ B.border $ B.str "Processing..."
       in w : drawUI prev
     Error err prev ->
@@ -181,17 +180,17 @@ appEvent chan uiState e =
               Nothing -> B.continue uiState
               Just (_, a) -> do
                 tid <- liftIO $ purchase u a chan
-                B.continue $ Processing u tid uiState
+                B.continue $ Processing tid uiState
        ev -> do
          newList <- B.handleEvent ev amounts
          B.continue $ TransactionMenu u balance newList transactions
-    Processing u tid prev -> case e of
+    Processing tid prev -> case e of
        VtyEvent (Vty.EvKey Vty.KEsc _) ->
          liftIO (throwTo tid Abort) >> B.continue uiState
        VtyEvent _ -> B.continue uiState
        PurchaseSuccessful newState -> B.continue newState
        PurchaseFailed err -> B.continue (Error err prev)
-    Error _ prev -> B.continue prev
+    Error _ prev -> B.continue prev -- TODO: try to redraw
   where
     filterUsers users p = B.continue $ UserMenu p users $ matchingUsers p users
 
