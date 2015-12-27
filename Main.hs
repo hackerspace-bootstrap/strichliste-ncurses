@@ -15,11 +15,11 @@ import Data.Aeson ( FromJSON, parseJSON, ToJSON, toJSON, (.:), (.:?), (.=)
                   , withObject, object
                   )
 import Data.Fixed
+import qualified Data.ListTrie.Map as Trie
+import qualified Data.Map as Map
 import Data.Proxy
 import qualified Data.Vector as V
 import qualified Data.Text as Text
-import qualified Data.Text.Encoding as Text
-import qualified Data.Trie as Trie
 import Data.Typeable (Typeable)
 import Formatting
 import qualified Graphics.Vty as Vty
@@ -99,19 +99,20 @@ data MyEvent
   | PurchaseSuccessful UIState
   | PurchaseFailed String
 
+type Trie = Trie.TrieMap Map.Map Char
 data FilterList a = FL
-  { filterPrefix :: Text.Text
-  , filterAll :: Trie.Trie a
-  , filterUpdate :: Text.Text -> Trie.Trie a -> B.List a
+  { filterPrefix :: [Char]
+  , filterAll :: Trie a
+  , filterUpdate :: [Char] -> Trie a -> B.List a
   , filterCurrent :: B.List a
   }
 
 instance B.HandleEvent (FilterList a) where
   handleEvent ev (FL fPrefix fAll fUpdate fCurrent) = case ev of
        Vty.EvKey (Vty.KChar c) [] ->
-         filterUsers $ fPrefix `Text.snoc` c
+         filterUsers $ fPrefix ++ [c]
        Vty.EvKey Vty.KBS [] ->
-         filterUsers $ if Text.null fPrefix then fPrefix else Text.init fPrefix
+         filterUsers $ if null fPrefix then fPrefix else init fPrefix
        _ ->
          FL fPrefix fAll fUpdate <$> B.handleEvent ev fCurrent
     where
@@ -144,8 +145,8 @@ drawUI uiState =
   case uiState of
     UserMenu (FL prefix _ _ users) ->
       let box = B.borderWithLabel (B.str "Select user") $ B.renderList users drawUserListElement
-          filterBox = B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.txt prefix
-          ui = B.vBox $ B.hCenter box : if Text.null prefix then [] else [ filterBox ]
+          filterBox = B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.str prefix
+          ui = B.vBox $ B.hCenter box : if null prefix then [] else [ filterBox ]
       in [ui]
     TransactionMenu _ balance amounts transactions ->
       let menubox = B.borderWithLabel (B.str "Select amounts") $ B.renderList amounts drawActionListElement
@@ -237,10 +238,10 @@ drawTransactioListElement :: Bool -> Transaction -> B.Widget
 drawTransactioListElement _ (Transaction v cd _ _) =
   B.txt $ sformat (stext % ": " % shown % "€") cd v
 
-matchingUsers :: Text.Text -> Trie.Trie User -> B.List User
+matchingUsers :: [Char] -> Trie User -> B.List User
 matchingUsers prefix users = B.list "Users" (V.fromList matching) 1
   where
-    matching = Trie.elems $ Trie.submap (Text.encodeUtf16LE prefix) users
+    matching = trieElems $ Trie.lookupPrefix prefix users
 
 drawUserListElement :: Bool -> User -> B.Widget
 drawUserListElement _ u = B.hCenter $ B.txt $ userName u
@@ -254,12 +255,15 @@ mkUserMenu page = UserMenu $ FL "" usersT matchingUsers $ B.list "Users" usersL 
     (usersT, usersL) = indexUsers page
 
 -- | Build a Trie and a sorted list of users from a page of users
-indexUsers :: Page User -> (Trie.Trie User, V.Vector User)
-indexUsers = (id &&& V.fromList . Trie.elems) . toTrie . pageEntries
+indexUsers :: Page User -> (Trie User, V.Vector User)
+indexUsers = (id &&& V.fromList . trieElems) . toTrie . pageEntries
+
+trieElems :: Trie a -> [a]
+trieElems = map snd . Trie.toList
 
 -- | Build a Trie from a list of users
-toTrie :: V.Vector User -> Trie.Trie User
-toTrie = Trie.fromList . V.toList . V.map (Text.encodeUtf16LE . userName &&& id)
+toTrie :: V.Vector User -> Trie User
+toTrie = Trie.fromList . V.toList . V.map (Text.unpack . userName &&& id)
 
 data Abort = Abort deriving (Show, Typeable)
 
