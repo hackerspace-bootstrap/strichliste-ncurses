@@ -215,7 +215,7 @@ getTransactionMenu u = do
     u' <- getUser $ userID u
     TransactionMenu u' (userBalance u') actionList <$> getTransactions u'
   where
-    actionList = B.list "Actions" (V.fromList [-0.5, -1, -1.5, -2.0]) 1
+    actionList = B.list "Actions" (V.fromList [2, 1.5, 1, 0.5, -0.5, -1, -1.5, -2.0]) 1
 
 getTransactions :: User -> ServantT (B.List Transaction)
 getTransactions (User _ uid _ _) = do
