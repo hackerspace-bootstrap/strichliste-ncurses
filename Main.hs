@@ -122,7 +122,7 @@ data UIState
   = UserMenu (FilterList User)
   | TransactionMenu User -- ^ selected user
                     Centi -- ^ user's balance
-                    (B.List Centi) -- ^ possible transactions
+                    (FilterList Centi) -- ^ possible transactions
                     (B.List Transaction) -- ^ past transactions
   | Processing ThreadId -- ^ Thread doing the work
                UIState -- ^ Previous state
@@ -148,7 +148,7 @@ drawUI uiState =
           filterBox = B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.str prefix
           ui = B.vBox $ B.hCenter box : if null prefix then [] else [ filterBox ]
       in [ui]
-    TransactionMenu _ balance amounts transactions ->
+    TransactionMenu _ balance (FL _ _ _ amounts) transactions ->
       let menubox = B.borderWithLabel (B.str "Select amounts") $ B.renderList amounts drawActionListElement
           menu = B.vCenter $ B.hCenter menubox
           balanceW = B.hCenter $ B.txt $ sformat shown balance
@@ -184,7 +184,7 @@ appEvent chan uiState e =
               Nothing -> B.continue uiState
               Just (_, u) -> toEventM uiState (getTransactionMenu u) >>= B.continue
        ev -> B.handleEvent ev fl >>= B.continue . UserMenu
-    TransactionMenu u balance amounts transactions -> case unsafeToVtyEvent e of
+    TransactionMenu u balance fl@(FL _ _ _ amounts) transactions -> case unsafeToVtyEvent e of
        Vty.EvKey Vty.KEsc _ ->
          toEventM uiState getUserMenu >>= B.continue
        Vty.EvKey Vty.KEnter _ ->
@@ -194,7 +194,7 @@ appEvent chan uiState e =
                 tid <- liftIO $ purchase u a chan
                 B.continue $ Processing tid uiState
        ev -> do
-         newList <- B.handleEvent ev amounts
+         newList <- B.handleEvent ev fl
          B.continue $ TransactionMenu u balance newList transactions
     Processing tid prev -> case e of
        VtyEvent (Vty.EvKey Vty.KEsc _) ->
@@ -224,7 +224,20 @@ getTransactionMenu u = do
     u' <- getUser $ userID u
     TransactionMenu u' (userBalance u') actionList <$> getTransactions u'
   where
-    actionList = B.list "Actions" (V.fromList [2, 1.5, 1, 0.5, -0.5, -1, -1.5, -2.0]) 1
+    amounts = [2, 1.5, 1, 0.5, -0.5, -1, -1.5, -2.0]
+    amountsT = indexAmounts amounts
+    actionList = FL "" amountsT matchingAmounts (mkActionList amounts)
+
+indexAmounts :: [Centi] -> Trie Centi
+indexAmounts = Trie.fromList . map (show &&& id)
+
+matchingAmounts :: [Char] -> Trie Centi -> B.List Centi
+matchingAmounts prefix users = B.list "Actions" (V.fromList matching) 1
+  where
+    matching = trieElems $ Trie.lookupPrefix prefix users
+
+mkActionList :: [Centi] -> B.List Centi
+mkActionList cs = B.list "Actions" (V.fromList cs) 1
 
 getTransactions :: User -> ServantT (B.List Transaction)
 getTransactions (User _ uid _ _) = do
