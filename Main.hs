@@ -114,15 +114,15 @@ filterList flPrefix flAll flName =
     matching = trieElems $ Trie.lookupPrefix flPrefix flAll
 
 instance B.HandleEvent (FilterList a) where
-  handleEvent ev (FL fPrefix fAll fName fCurrent) = case ev of
+  handleEvent ev (FL flPrefix flAll flName flCurrent) = case ev of
        Vty.EvKey (Vty.KChar c) [] ->
-         filterUsers $ fPrefix ++ [c]
+         filterUsers $ flPrefix ++ [c]
        Vty.EvKey Vty.KBS [] ->
-         filterUsers $ if null fPrefix then fPrefix else init fPrefix
+         filterUsers $ if null flPrefix then flPrefix else init flPrefix
        _ ->
-         FL fPrefix fAll fName <$> B.handleEvent ev fCurrent
+         FL flPrefix flAll flName <$> B.handleEvent ev flCurrent
     where
-      filterUsers p = return $ filterList p fAll fName
+      filterUsers p = return $ filterList p flAll flName
 
 data UIState
   = UserMenu (FilterList User)
