@@ -103,20 +103,26 @@ type Trie = Trie.TrieMap Map.Map Char
 data FilterList a = FL
   { filterPrefix :: [Char]
   , filterAll :: Trie a
-  , filterUpdate :: [Char] -> Trie a -> B.List a
+  , filterName :: B.Name
   , filterCurrent :: B.List a
   }
 
+filterList :: [Char] -> Trie a -> B.Name -> FilterList a
+filterList flPrefix flAll flName =
+    FL flPrefix flAll flName $ B.list flName (V.fromList matching) 1
+  where
+    matching = trieElems $ Trie.lookupPrefix flPrefix flAll
+
 instance B.HandleEvent (FilterList a) where
-  handleEvent ev (FL fPrefix fAll fUpdate fCurrent) = case ev of
+  handleEvent ev (FL fPrefix fAll fName fCurrent) = case ev of
        Vty.EvKey (Vty.KChar c) [] ->
          filterUsers $ fPrefix ++ [c]
        Vty.EvKey Vty.KBS [] ->
          filterUsers $ if null fPrefix then fPrefix else init fPrefix
        _ ->
-         FL fPrefix fAll fUpdate <$> B.handleEvent ev fCurrent
+         FL fPrefix fAll fName <$> B.handleEvent ev fCurrent
     where
-      filterUsers p = return $ FL p fAll fUpdate (fUpdate p fAll)
+      filterUsers p = return $ filterList p fAll fName
 
 data UIState
   = UserMenu (FilterList User)
@@ -226,15 +232,10 @@ getTransactionMenu u = do
   where
     amounts = [2, 1.5, 1, 0.5, -0.5, -1, -1.5, -2.0]
     amountsT = indexAmounts amounts
-    actionList = FL "" amountsT matchingAmounts (mkActionList amounts)
+    actionList = FL "" amountsT "Actions" (mkActionList amounts)
 
 indexAmounts :: [Centi] -> Trie Centi
 indexAmounts = Trie.fromList . map (show &&& id)
-
-matchingAmounts :: [Char] -> Trie Centi -> B.List Centi
-matchingAmounts prefix users = B.list "Actions" (V.fromList matching) 1
-  where
-    matching = trieElems $ Trie.lookupPrefix prefix users
 
 mkActionList :: [Centi] -> B.List Centi
 mkActionList cs = B.list "Actions" (V.fromList cs) 1
@@ -251,11 +252,6 @@ drawTransactioListElement :: Bool -> Transaction -> B.Widget
 drawTransactioListElement _ (Transaction v cd _ _) =
   B.txt $ sformat (stext % ": " % shown % "€") cd v
 
-matchingUsers :: [Char] -> Trie User -> B.List User
-matchingUsers prefix users = B.list "Users" (V.fromList matching) 1
-  where
-    matching = trieElems $ Trie.lookupPrefix prefix users
-
 drawUserListElement :: Bool -> User -> B.Widget
 drawUserListElement _ u = B.hCenter $ B.txt $ userName u
 
@@ -263,13 +259,13 @@ getUserMenu :: ServantT UIState
 getUserMenu = mkUserMenu <$> getUsers
 
 mkUserMenu :: Page User -> UIState
-mkUserMenu page = UserMenu $ FL "" usersT matchingUsers $ B.list "Users" usersL 1
+mkUserMenu page = UserMenu $ filterList "" usersT "Users"
   where
-    (usersT, usersL) = indexUsers page
+    usersT = indexUsers page
 
 -- | Build a Trie and a sorted list of users from a page of users
-indexUsers :: Page User -> (Trie User, V.Vector User)
-indexUsers = (id &&& V.fromList . trieElems) . toTrie . pageEntries
+indexUsers :: Page User -> Trie User
+indexUsers = toTrie . pageEntries
 
 trieElems :: Trie a -> [a]
 trieElems = map snd . Trie.toList
@@ -299,7 +295,7 @@ toEventM prev servantState = liftIO $ runEitherT servantState >>= \case
     Left err -> return $ Error (show err) prev
 
 emptyState :: UIState
-emptyState = UserMenu $ FL "" Trie.empty matchingUsers $ B.list "Users" V.empty 1
+emptyState = UserMenu $ filterList "" Trie.empty "Users"
 
 main :: IO ()
 main = do
