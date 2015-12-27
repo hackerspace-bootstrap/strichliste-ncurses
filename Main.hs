@@ -26,7 +26,15 @@ import qualified Graphics.Vty as Vty
 import Servant.API
 import Servant.Client
 
+
+-------------------------------------------------------------------------------
+-- Types
+-------------------------------------------------------------------------------
+
 type ServantT = EitherT ServantError IO
+
+
+-- Strichliste API ------------------------------------------------------------
 
 data Page a = Page
   { pageOverallCount :: Int
@@ -94,12 +102,11 @@ getUsers :<|> getUser :<|> getUserTransactions :<|> postTransaction =
   where
     host = BaseUrl Https "demo-api.strichliste.org" 443
 
-data MyEvent
-  = VtyEvent Vty.Event
-  | PurchaseSuccessful UIState
-  | PurchaseFailed String
+
+-- Application ----------------------------------------------------------------
 
 type Trie = Trie.TrieMap Map.Map Char
+
 data FilterList a = FL
   { filterPrefix :: [Char]
   , filterAll :: Trie a
@@ -124,6 +131,12 @@ instance B.HandleEvent (FilterList a) where
     where
       filterUsers p = return $ filterList p flAll flName
 
+
+data MyEvent
+  = VtyEvent Vty.Event
+  | PurchaseSuccessful UIState
+  | PurchaseFailed String
+
 data UIState
   = UserMenu (FilterList User)
   | TransactionMenu User -- ^ selected user
@@ -135,16 +148,10 @@ data UIState
   | Error String -- ^ Error description
           UIState -- ^ Previous state
 
-app :: Chan MyEvent -> B.App UIState MyEvent
-app chan = B.App
-  { B.appDraw = drawUI
-  , B.appStartEvent = return
-  , B.appHandleEvent = appEvent chan
-  , B.appAttrMap = const theMap
-  , B.appLiftVtyEvent = VtyEvent
-  , B.appChooseCursor = B.showFirstCursor
-  }
 
+-------------------------------------------------------------------------------
+-- Drawing
+-------------------------------------------------------------------------------
 
 drawUI :: UIState -> [B.Widget]
 drawUI uiState =
@@ -178,6 +185,30 @@ drawUI uiState =
                  $ B.str err
       in errorW : drawUI prev
 
+errorAttr :: B.AttrName
+errorAttr = B.attrName "errorMsg"
+
+theMap :: B.AttrMap
+theMap = B.attrMap Vty.defAttr
+  [ (B.listAttr,            Vty.white `B.on` Vty.black)
+  , (B.listSelectedAttr,    Vty.black `B.on` Vty.white)
+  , (errorAttr,             B.fg Vty.red)
+  ]
+
+drawActionListElement :: Bool -> Centi -> B.Widget
+drawActionListElement _ amount = B.hCenter $ B.txt $ sformat shown amount
+
+drawTransactioListElement :: Bool -> Transaction -> B.Widget
+drawTransactioListElement _ (Transaction v cd _ _) =
+  B.txt $ sformat (stext % ": " % shown % "€") cd v
+
+drawUserListElement :: Bool -> User -> B.Widget
+drawUserListElement _ u = B.hCenter $ B.txt $ userName u
+
+
+-------------------------------------------------------------------------------
+-- State
+-------------------------------------------------------------------------------
 
 appEvent :: Chan MyEvent -> UIState -> MyEvent -> B.EventM (B.Next UIState)
 appEvent chan uiState e =
@@ -214,16 +245,25 @@ unsafeToVtyEvent :: MyEvent -> Vty.Event
 unsafeToVtyEvent (VtyEvent e) = e
 unsafeToVtyEvent _ = error "Invalid event received!"
 
-errorAttr :: B.AttrName
-errorAttr = B.attrName "errorMsg"
 
-theMap :: B.AttrMap
-theMap = B.attrMap Vty.defAttr
-  [ (B.listAttr,            Vty.white `B.on` Vty.black)
-  , (B.listSelectedAttr,    Vty.black `B.on` Vty.white)
-  , (errorAttr,             B.fg Vty.red)
-  ]
+-- User Menu -----------------------------------------------------------------
 
+getUserMenu :: ServantT UIState
+getUserMenu = mkUserMenu <$> getUsers
+
+mkUserMenu :: Page User -> UIState
+mkUserMenu page = UserMenu $ filterList "" usersT "Users"
+  where
+    usersT = indexUsers page
+
+indexUsers :: Page User -> Trie User
+indexUsers = usersToTrie . pageEntries
+
+usersToTrie :: V.Vector User -> Trie User
+usersToTrie = Trie.fromList . V.toList . V.map (Text.unpack . userName &&& id)
+
+
+-- Transaction Menu -----------------------------------------------------------
 
 getTransactionMenu :: User -> ServantT UIState
 getTransactionMenu u = do
@@ -245,34 +285,8 @@ getTransactions (User _ uid _ _) = do
     pastTrans <- getUserTransactions uid
     return $ B.list "Transactions" (pageEntries pastTrans) 1
 
-drawActionListElement :: Bool -> Centi -> B.Widget
-drawActionListElement _ amount = B.hCenter $ B.txt $ sformat shown amount
 
-drawTransactioListElement :: Bool -> Transaction -> B.Widget
-drawTransactioListElement _ (Transaction v cd _ _) =
-  B.txt $ sformat (stext % ": " % shown % "€") cd v
-
-drawUserListElement :: Bool -> User -> B.Widget
-drawUserListElement _ u = B.hCenter $ B.txt $ userName u
-
-getUserMenu :: ServantT UIState
-getUserMenu = mkUserMenu <$> getUsers
-
-mkUserMenu :: Page User -> UIState
-mkUserMenu page = UserMenu $ filterList "" usersT "Users"
-  where
-    usersT = indexUsers page
-
--- | Build a Trie and a sorted list of users from a page of users
-indexUsers :: Page User -> Trie User
-indexUsers = toTrie . pageEntries
-
-trieElems :: Trie a -> [a]
-trieElems = map snd . Trie.toList
-
--- | Build a Trie from a list of users
-toTrie :: V.Vector User -> Trie User
-toTrie = Trie.fromList . V.toList . V.map (Text.unpack . userName &&& id)
+-- Processing -----------------------------------------------------------------
 
 data Abort = Abort deriving (Show, Typeable)
 
@@ -289,13 +303,34 @@ purchase u@(User _ uid _ _) amount chan = liftIO $ mask $ \restore -> forkIO $
     eitherToEvent (Left err) = PurchaseFailed (show err)
     eitherToEvent (Right uiState) = PurchaseSuccessful uiState
 
+
+-- Misc -----------------------------------------------------------------------
+
 toEventM :: MonadIO io => UIState -> ServantT UIState -> io UIState
 toEventM prev servantState = liftIO $ runEitherT servantState >>= \case
     Right st -> return st
     Left err -> return $ Error (show err) prev
 
+trieElems :: Trie a -> [a]
+trieElems = map snd . Trie.toList
+
 emptyState :: UIState
 emptyState = UserMenu $ filterList "" Trie.empty "Users"
+
+
+-------------------------------------------------------------------------------
+-- Main
+-------------------------------------------------------------------------------
+
+app :: Chan MyEvent -> B.App UIState MyEvent
+app chan = B.App
+  { B.appDraw = drawUI
+  , B.appStartEvent = return
+  , B.appHandleEvent = appEvent chan
+  , B.appAttrMap = const theMap
+  , B.appLiftVtyEvent = VtyEvent
+  , B.appChooseCursor = B.showFirstCursor
+  }
 
 main :: IO ()
 main = do
