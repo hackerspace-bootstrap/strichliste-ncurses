@@ -24,7 +24,7 @@ executable sl-curses
                        containers,
                        servant ==0.4.*,
                        servant-client ==0.4.*,
-                       brick ==0.2,
+                       brick >=0.2 && <=0.4,
                        vty,
                        aeson,
                        text,
