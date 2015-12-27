@@ -161,13 +161,14 @@ drawUI uiState =
           filterBox = B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.str prefix
           ui = B.vBox $ B.hCenter box : if null prefix then [] else [ filterBox ]
       in [ui]
-    TransactionMenu _ balance (FL _ _ _ amounts) transactions ->
+    TransactionMenu _ balance (FL prefix _ _ amounts) transactions ->
       let menubox = B.borderWithLabel (B.str "Select amounts") $ B.renderList amounts drawActionListElement
           menu = B.vCenter $ B.hCenter menubox
           balanceW = B.hCenter $ B.txt $ sformat shown balance
           transactionW = B.renderList transactions drawTransactioListElement
+          filterBox = B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.str prefix
           ui = B.hBox
-                [ menu
+                [ B.vBox $ menu : if null prefix then [] else [ filterBox ]
                 , B.borderWithLabel (B.str "User info") $ B.vBox
                     [ balanceW
                     , B.hBorderWithLabel (B.str "Past transactions")
