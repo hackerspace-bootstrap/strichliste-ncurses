@@ -99,10 +99,26 @@ data MyEvent
   | PurchaseSuccessful UIState
   | PurchaseFailed String
 
+data FilterList a = FL
+  { filterPrefix :: Text.Text
+  , filterAll :: Trie.Trie a
+  , filterUpdate :: Text.Text -> Trie.Trie a -> B.List a
+  , filterCurrent :: B.List a
+  }
+
+instance B.HandleEvent (FilterList a) where
+  handleEvent ev (FL fPrefix fAll fUpdate fCurrent) = case ev of
+       Vty.EvKey (Vty.KChar c) [] ->
+         filterUsers $ fPrefix `Text.snoc` c
+       Vty.EvKey Vty.KBS [] ->
+         filterUsers $ if Text.null fPrefix then fPrefix else Text.init fPrefix
+       _ ->
+         FL fPrefix fAll fUpdate <$> B.handleEvent ev fCurrent
+    where
+      filterUsers p = return $ FL p fAll fUpdate (fUpdate p fAll)
+
 data UIState
-  = UserMenu Text.Text -- ^ current filter
-             (Trie.Trie User) -- ^ all users
-             (B.List User) -- ^ currently displayed users
+  = UserMenu (FilterList User)
   | TransactionMenu User -- ^ selected user
                     Centi -- ^ user's balance
                     (B.List Centi) -- ^ possible transactions
@@ -126,7 +142,7 @@ app chan = B.App
 drawUI :: UIState -> [B.Widget]
 drawUI uiState =
   case uiState of
-    UserMenu prefix _ users ->
+    UserMenu (FL prefix _ _ users) ->
       let box = B.borderWithLabel (B.str "Select user") $ B.renderList users drawUserListElement
           filterBox = B.borderWithLabel (B.str "Filter") $ B.hCenter $ B.txt prefix
           ui = B.vBox $ B.hCenter box : if Text.null prefix then [] else [ filterBox ]
@@ -159,19 +175,14 @@ drawUI uiState =
 appEvent :: Chan MyEvent -> UIState -> MyEvent -> B.EventM (B.Next UIState)
 appEvent chan uiState e =
   case uiState of
-    UserMenu prefix users usersL -> case unsafeToVtyEvent e of
+    UserMenu fl -> case unsafeToVtyEvent e of
        Vty.EvKey Vty.KEsc _ ->
          B.halt uiState
        Vty.EvKey Vty.KEnter _ ->
-         case B.listSelectedElement usersL of
+         case B.listSelectedElement (filterCurrent fl) of
               Nothing -> B.continue uiState
               Just (_, u) -> toEventM uiState (getTransactionMenu u) >>= B.continue
-       Vty.EvKey (Vty.KChar c) [] ->
-         filterUsers users $ prefix `Text.snoc` c
-       Vty.EvKey Vty.KBS [] ->
-         filterUsers users $ if Text.null prefix then prefix else Text.init prefix
-       ev ->
-         B.handleEvent ev usersL >>= B.continue . UserMenu prefix users
+       ev -> B.handleEvent ev fl >>= B.continue . UserMenu
     TransactionMenu u balance amounts transactions -> case unsafeToVtyEvent e of
        Vty.EvKey Vty.KEsc _ ->
          toEventM uiState getUserMenu >>= B.continue
@@ -191,8 +202,6 @@ appEvent chan uiState e =
        PurchaseSuccessful newState -> B.continue newState
        PurchaseFailed err -> B.continue (Error err prev)
     Error _ prev -> B.continue prev -- TODO: try to redraw
-  where
-    filterUsers users p = B.continue $ UserMenu p users $ matchingUsers p users
 
 unsafeToVtyEvent :: MyEvent -> Vty.Event
 unsafeToVtyEvent (VtyEvent e) = e
@@ -240,7 +249,7 @@ getUserMenu :: ServantT UIState
 getUserMenu = mkUserMenu <$> getUsers
 
 mkUserMenu :: Page User -> UIState
-mkUserMenu page = UserMenu "" usersT $ B.list "Users" usersL 1
+mkUserMenu page = UserMenu $ FL "" usersT matchingUsers $ B.list "Users" usersL 1
   where
     (usersT, usersL) = indexUsers page
 
@@ -273,7 +282,7 @@ toEventM prev servantState = liftIO $ runEitherT servantState >>= \case
     Left err -> return $ Error (show err) prev
 
 emptyState :: UIState
-emptyState = UserMenu "" Trie.empty $ B.list "Users" V.empty 1
+emptyState = UserMenu $ FL "" Trie.empty matchingUsers $ B.list "Users" V.empty 1
 
 main :: IO ()
 main = do
