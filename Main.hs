@@ -260,10 +260,8 @@ usersToTrie :: V.Vector User -> Trie User
 usersToTrie = Trie.fromList . V.toList . V.map (Text.unpack . userName &&& id)
 
 chooseSelectedUser :: UIState -> FilterList User -> B.EventM (B.Next UIState)
-chooseSelectedUser uiState (FL _ _ _ users) =
-  case B.listSelectedElement users of
-    Nothing -> B.continue uiState
-    Just (_, u) -> toEventM uiState (getTransactionMenu u) >>= B.continue
+chooseSelectedUser uiState fl = withSelectedElement uiState fl $ \u ->
+    toEventM uiState (getTransactionMenu u) >>= B.continue
 
 
 -- Transaction Menu -----------------------------------------------------------
@@ -290,12 +288,9 @@ getTransactions (User _ uid _ _) = do
 
 chooseSelectedAmount :: UIState -> Chan MyEvent -> User -> FilterList Centi
                      -> B.EventM (B.Next UIState)
-chooseSelectedAmount uiState chan u (FL _ _ _ amounts) =
-  case B.listSelectedElement amounts of
-    Nothing -> B.continue uiState
-    Just (_, a) -> do
-      tid <- liftIO $ purchase u a chan
-      B.continue $ Processing tid uiState
+chooseSelectedAmount uiState chan u fl = withSelectedElement uiState fl $ \a -> do
+    tid <- liftIO $ purchase u a chan
+    B.continue $ Processing tid uiState
 
 
 -- Processing -----------------------------------------------------------------
@@ -330,6 +325,13 @@ trieElems = map snd . Trie.toAscList
 
 emptyState :: UIState
 emptyState = UserMenu $ filterList "" Trie.empty "Users"
+
+withSelectedElement :: UIState -> FilterList a -> (a -> B.EventM (B.Next UIState))
+                    -> B.EventM (B.Next UIState)
+withSelectedElement uiState (FL _ _ _ as) f =
+  case B.listSelectedElement as of
+    Nothing -> B.continue uiState
+    Just (_, a) -> f a
 
 
 -------------------------------------------------------------------------------
