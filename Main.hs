@@ -222,28 +222,17 @@ appEvent :: Chan MyEvent -> UIState -> MyEvent -> B.EventM (B.Next UIState)
 appEvent chan uiState e =
   case uiState of
     UserMenu fl -> case unsafeToVtyEvent e of
-       Vty.EvKey Vty.KEsc _ ->
-         B.halt uiState
-       Vty.EvKey Vty.KEnter _ ->
-         case B.listSelectedElement (filterCurrent fl) of
-              Nothing -> B.continue uiState
-              Just (_, u) -> toEventM uiState (getTransactionMenu u) >>= B.continue
+       Vty.EvKey Vty.KEsc _ -> B.halt uiState
+       Vty.EvKey Vty.KEnter _ -> chooseSelectedUser uiState fl
        ev -> B.handleEvent ev fl >>= B.continue . UserMenu
-    TransactionMenu u balance fl@(FL _ _ _ amounts) transactions -> case unsafeToVtyEvent e of
-       Vty.EvKey Vty.KEsc _ ->
-         toEventM uiState getUserMenu >>= B.continue
-       Vty.EvKey Vty.KEnter _ ->
-         case B.listSelectedElement amounts of
-              Nothing -> B.continue uiState
-              Just (_, a) -> do
-                tid <- liftIO $ purchase u a chan
-                B.continue $ Processing tid uiState
+    TransactionMenu u balance fl transactions -> case unsafeToVtyEvent e of
+       Vty.EvKey Vty.KEsc _ -> toEventM uiState getUserMenu >>= B.continue
+       Vty.EvKey Vty.KEnter _ -> chooseSelectedAmount uiState chan u fl
        ev -> do
          newList <- B.handleEvent ev fl
          B.continue $ TransactionMenu u balance newList transactions
     Processing tid prev -> case e of
-       VtyEvent (Vty.EvKey Vty.KEsc _) ->
-         liftIO (throwTo tid Abort) >> B.continue uiState
+       VtyEvent (Vty.EvKey Vty.KEsc _) -> abortProcessing uiState tid
        VtyEvent _ -> B.continue uiState
        PurchaseSuccessful newState -> B.continue newState
        PurchaseFailed err -> B.continue (Error err prev)
@@ -270,6 +259,12 @@ indexUsers = usersToTrie . pageEntries
 usersToTrie :: V.Vector User -> Trie User
 usersToTrie = Trie.fromList . V.toList . V.map (Text.unpack . userName &&& id)
 
+chooseSelectedUser :: UIState -> FilterList User -> B.EventM (B.Next UIState)
+chooseSelectedUser uiState (FL _ _ _ users) =
+  case B.listSelectedElement users of
+    Nothing -> B.continue uiState
+    Just (_, u) -> toEventM uiState (getTransactionMenu u) >>= B.continue
+
 
 -- Transaction Menu -----------------------------------------------------------
 
@@ -293,6 +288,15 @@ getTransactions (User _ uid _ _) = do
     pastTrans <- getUserTransactions uid
     return $ B.list "Transactions" (pageEntries pastTrans) 1
 
+chooseSelectedAmount :: UIState -> Chan MyEvent -> User -> FilterList Centi
+                     -> B.EventM (B.Next UIState)
+chooseSelectedAmount uiState chan u (FL _ _ _ amounts) =
+  case B.listSelectedElement amounts of
+    Nothing -> B.continue uiState
+    Just (_, a) -> do
+      tid <- liftIO $ purchase u a chan
+      B.continue $ Processing tid uiState
+
 
 -- Processing -----------------------------------------------------------------
 
@@ -311,6 +315,8 @@ purchase u@(User _ uid _ _) amount chan = liftIO $ mask $ \restore -> forkIO $
     eitherToEvent (Left err) = PurchaseFailed (show err)
     eitherToEvent (Right uiState) = PurchaseSuccessful uiState
 
+abortProcessing :: UIState -> ThreadId -> B.EventM (B.Next UIState)
+abortProcessing uiState tid = liftIO (throwTo tid Abort) >> B.continue uiState
 
 -- Misc -----------------------------------------------------------------------
 
