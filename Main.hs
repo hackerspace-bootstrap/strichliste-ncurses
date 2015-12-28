@@ -320,7 +320,7 @@ toEventM prev servantState = liftIO $ runEitherT servantState >>= \case
     Left err -> return $ Error (show err) prev
 
 trieElems :: Trie a -> [a]
-trieElems = map snd . Trie.toList
+trieElems = map snd . Trie.toAscList
 
 emptyState :: UIState
 emptyState = UserMenu $ filterList "" Trie.empty "Users"
